@@ -1,0 +1,406 @@
+"""Fonctions utilitaires pour l'analyse de documents d'appel d'offre."""
+
+import datetime as dt
+import io
+import re
+import shutil
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence
+
+
+def load_pdf_text(raw: bytes) -> str:
+    """Extrait le texte d'un PDF avec plusieurs méthodes de secours."""
+    if not raw:
+        return ""
+    
+    text = ""
+    
+    # Méthode 1 : pypdf (méthode principale)
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(raw))
+        
+        pages = []
+        for page in reader.pages:
+            try:
+                page_text = page.extract_text()
+                if page_text:
+                    pages.append(page_text)
+            except Exception:
+                continue
+        
+        if pages:
+            text = "\n".join(pages)
+            if len(text.strip()) > 50:  # Au moins 50 caractères trouvés
+                return text
+    except Exception:
+        pass
+    
+    # Méthode 2 : PyMuPDF (fitz) - souvent meilleur pour extraire le texte
+    try:
+        import fitz
+        doc = fitz.open(stream=raw, filetype="pdf")
+        pages = []
+        for page in doc:
+            try:
+                page_text = page.get_text()
+                if page_text:
+                    pages.append(page_text)
+            except Exception:
+                continue
+        doc.close()
+        
+        if pages:
+            text = "\n".join(pages)
+            if len(text.strip()) > 50:
+                return text
+    except Exception:
+        pass
+    
+    # Méthode 3 : pdfplumber (alternative)
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(raw)) as pdf:
+            pages = []
+            for page in pdf.pages:
+                try:
+                    page_text = page.extract_text()
+                    if page_text:
+                        pages.append(page_text)
+                except Exception:
+                    continue
+            
+            if pages:
+                text = "\n".join(pages)
+                if len(text.strip()) > 50:
+                    return text
+    except Exception:
+        pass
+    
+    return text
+
+
+def load_docx_text(raw: bytes) -> str:
+    """Extrait le texte d'un fichier DOCX."""
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(raw))
+        paragraphs = [p.text for p in doc.paragraphs]
+        return "\n".join(paragraphs)
+    except Exception:
+        return ""
+
+
+def extract_email(text: str) -> Optional[str]:
+    """Extrait l'adresse email de contact pour l'envoi du dossier depuis le texte."""
+    if not text:
+        return None
+    
+    lines = text.split('\n')
+    
+    # Priorité 1 : Cherche dans la section "Conditions d'envoi ou de remise des plis"
+    sections_conditions_envoi = []
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if re.search(r'conditions?\s+d\'?envoi\s+(?:ou\s+de\s+)?remise\s+des\s+plis?', line_lower):
+            # Prend toute la section (jusqu'à la prochaine section majeure ou 150 lignes)
+            end_idx = i + 150
+            for j in range(i + 1, min(len(lines), i + 150)):
+                if re.search(r'^(chapitre|section|partie|titre)\s+', lines[j].lower()):
+                    if j > i + 10:
+                        end_idx = j
+                        break
+            section = '\n'.join(lines[max(0, i-1):end_idx])
+            sections_conditions_envoi.append(section)
+    
+    # Cherche dans les sections pertinentes
+    email_keywords = [
+        r'adresse\s+electronique[^\w]',
+        r'adresse\s+email[^\w]',
+        r'adresse\s+mail[^\w]',
+        r'courrier\s+electronique[^\w]',
+        r'contact[^\w]',
+        r'envoyer\s+à[^\w]',
+        r'destinataire[^\w]',
+        r'depot\s+(?:electronique|numerique)[^\w]',
+    ]
+    
+    relevant_sections = []
+    
+    # Cherche d'abord dans la section "Conditions d'envoi ou de remise des plis"
+    if sections_conditions_envoi:
+        for section in sections_conditions_envoi:
+            section_lower = section.lower()
+            for keyword in email_keywords:
+                if re.search(keyword, section_lower):
+                    relevant_sections.insert(0, section)
+                    break
+    
+    # Cherche ensuite dans le reste du document
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        for keyword in email_keywords:
+            if re.search(keyword, line_lower):
+                section = '\n'.join(lines[max(0, i-1):min(len(lines), i+5)])
+                if section not in relevant_sections:
+                    relevant_sections.append(section)
+                break
+    
+    text_to_search = '\n'.join(relevant_sections) if relevant_sections else text
+    
+    # Pattern pour les emails
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    emails = re.findall(email_pattern, text_to_search, re.IGNORECASE)
+    
+    if not emails:
+        # Si pas trouvé dans les sections, cherche dans tout le texte
+        emails = re.findall(email_pattern, text, re.IGNORECASE)
+    
+    if not emails:
+        return None
+    
+    # Filtre les emails courants à éviter
+    excluded = ['example.com', 'test.com', 'noreply', 'no-reply', 'webmaster']
+    for email in emails:
+        email_lower = email.lower()
+        if not any(exc in email_lower for exc in excluded):
+            return email
+    
+    return emails[0] if emails else None
+
+
+def extract_postal_address(text: str) -> Optional[str]:
+    """Extrait une adresse postale approximative du texte."""
+    # Pattern simple pour les adresses françaises
+    address_pattern = r'\d+[,\s]+[A-Za-zÀ-ÿ\s]+(?:rue|avenue|boulevard|place|chemin|route|impasse)[A-Za-zÀ-ÿ\s]+\d{5}'
+    matches = re.findall(address_pattern, text, re.IGNORECASE)
+    if matches:
+        return matches[0]
+    return None
+
+
+def guess_buyer(text: str) -> Optional[str]:
+    """Tente de deviner le nom de l'acheteur."""
+    # Recherche de patterns communs
+    patterns = [
+        r'acheteur[:\s]+([A-Z][A-Za-zÀ-ÿ\s]+)',
+        r'commande[:\s]+([A-Z][A-Za-zÀ-ÿ\s]+)',
+        r'maître[:\s]+d\'?ouvrage[:\s]+([A-Z][A-Za-zÀ-ÿ\s]+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    
+    return None
+
+
+def guess_deadline(text: str):
+    """Tente de deviner la date limite de dépôt."""
+    import datetime as dt
+    
+    # Patterns de dates
+    date_patterns = [
+        r'date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:dépôt|remise)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'dépôt[:\s]+(?:avant|le|au)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})[:\s]+(?:date[:\s]+limite|dépôt)',
+    ]
+    
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            try:
+                # Tentative de parsing de la date
+                for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y']:
+                    try:
+                        return dt.datetime.strptime(date_str, fmt)
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+    
+    return None
+
+
+@dataclass
+class ChecklistRow:
+    """Représente une ligne de la checklist."""
+    
+    key: str
+    label: str
+    status: str
+    source: str
+    submission_path: str
+    max_age_days: str = ""
+
+
+def now_utc() -> dt.datetime:
+    """Retourne la date/heure actuelle en UTC."""
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def slugify(value: str) -> str:
+    """Convertit une chaîne en slug (format URL-safe)."""
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-").lower()
+    return slug or "ao"
+
+
+def find_best_doc(base: Path, patterns: Sequence[str], max_age_days: Optional[int]) -> Optional[Path]:
+    """Trouve le meilleur document correspondant aux critères."""
+    if not base.exists():
+        return None
+    normalized = [p.lower() for p in patterns if p]
+    best: Optional[Path] = None
+    best_mtime = None
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if normalized and not all(term in name for term in normalized):
+            continue
+        stat = path.stat()
+        if max_age_days is not None:
+            age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc)
+            if age > dt.timedelta(days=max_age_days):
+                continue
+        if best is None or stat.st_mtime > (best_mtime or 0):
+            best = path
+            best_mtime = stat.st_mtime
+    return best
+
+
+def find_all_matching_docs(base: Path, patterns: Sequence[str], max_age_days: Optional[int]) -> List[Path]:
+    """Trouve tous les documents correspondant aux critères, triés par date de modification (plus récent d'abord).
+    
+    La recherche est flexible : si plusieurs patterns sont fournis, au moins un doit correspondre.
+    Si un seul pattern est fourni, il doit correspondre.
+    """
+    if not base.exists():
+        return []
+    normalized = [p.lower() for p in patterns if p]
+    if not normalized:
+        return []
+    
+    matching_docs = []
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        
+        # Recherche flexible : au moins un terme doit correspondre
+        matches_count = sum(1 for term in normalized if term in name)
+        if matches_count == 0:
+            continue
+        
+        stat = path.stat()
+        if max_age_days is not None:
+            age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc)
+            if age > dt.timedelta(days=max_age_days):
+                continue
+        matching_docs.append((path, stat.st_mtime, matches_count))
+    
+    # Trie par nombre de correspondances (plus de correspondances d'abord), puis par date (plus récent d'abord)
+    matching_docs.sort(key=lambda x: (x[2], x[1]), reverse=True)
+    return [doc[0] for doc in matching_docs]
+
+
+def copy_if_found(source: Path, destination_dir: Path) -> Path:
+    """Copie un fichier dans le répertoire de destination."""
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    target = destination_dir / source.name
+    shutil.copy2(source, target)
+    return target
+
+
+def write_markdown_table(rows: Iterable[ChecklistRow]) -> str:
+    """Génère un tableau Markdown à partir des lignes."""
+    header = "| Key | Label | Status | Source | Submission |\n| --- | --- | --- | --- | --- |\n"
+    body_lines = []
+    for row in rows:
+        body_lines.append(
+            f"| {row.key} | {row.label} | {row.status} | {row.source} | {row.submission_path} |"
+        )
+    return header + "\n".join(body_lines)
+
+
+def zip_dir(folder: Path) -> bytes:
+    """Crée un fichier ZIP du contenu d'un dossier."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in folder.rglob("*"):
+            if file.is_file():
+                zf.write(file, file.relative_to(folder))
+    buffer.seek(0)
+    return buffer.read()
+
+
+def write_email_draft(
+    folder: Path,
+    buyer: Optional[str],
+    deadline: Optional[dt.datetime],
+    rows: Sequence[ChecklistRow],
+    email_to: Optional[str] = None,
+    ao_id: Optional[str] = None
+) -> Path:
+    """Génère un brouillon d'email avec indication des documents manquants."""
+    subject = f"Dossier de reponse{' - ' + ao_id if ao_id else ''}"
+    
+    missing_docs = [row for row in rows if row.status == "MISSING"]
+    ok_docs = [row for row in rows if row.status == "OK"]
+    draft_docs = [row for row in rows if row.status == "DRAFT"]
+    
+    lines = [
+        f"À: {email_to if email_to else '[EMAIL À COMPLÉTER]'}",
+        f"Sujet: {subject}",
+        "",
+        f"Bonjour {buyer or 'Madame, Monsieur'},",
+        "",
+        "Veuillez trouver ci-joint notre dossier de reponse à votre appel d'offre.",
+        "",
+    ]
+    
+    if ok_docs:
+        lines.append("Les pieces suivantes sont incluses :")
+        for row in ok_docs:
+            lines.append(f"- ✅ {row.label}")
+        lines.append("")
+    
+    if draft_docs:
+        lines.append("Les pieces suivantes sont en brouillon (à compléter) :")
+        for row in draft_docs:
+            lines.append(f"- 📝 {row.label}")
+        lines.append("")
+    
+    if missing_docs:
+        lines.append("⚠️ ATTENTION : Les pieces suivantes sont MANQUANTES :")
+        for row in missing_docs:
+            lines.append(f"- ❌ {row.label}")
+        lines.append("")
+        lines.append("Veuillez compléter le dossier avant l'envoi final.")
+        lines.append("")
+    
+    if deadline:
+        time_str = deadline.strftime('%H:%M') if (deadline.hour or deadline.minute) else '23:59'
+        lines.extend(
+            [
+                f"Pour rappel, la date limite de depot est le {deadline.strftime('%d/%m/%Y')} à {time_str}.",
+                "",
+            ]
+        )
+    
+    lines.extend(
+        [
+            "Nous restons à votre disposition pour tout complement d'information.",
+            "",
+            "Cordialement,",
+            "",
+        ]
+    )
+    path = folder / "email_draft.txt"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
