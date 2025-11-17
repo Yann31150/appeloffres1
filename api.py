@@ -12,6 +12,7 @@ from extract_required_documents import detect_sector, extract_required_documents
 from utils import (
     extract_email,
     extract_postal_address,
+    extract_urls,
     guess_buyer,
     guess_deadline,
     load_docx_text,
@@ -80,6 +81,21 @@ async def analyze_ao(files: List[UploadFile] = File(...)):
     buyer = guess_buyer(combined_text)
     deadline_dt: Optional[dt.datetime] = guess_deadline(combined_text)
     deadline = deadline_dt.isoformat() if deadline_dt else None
+    
+    # Extraction des URLs depuis les PDFs
+    all_urls = []
+    for i, (filename, raw) in enumerate(files_data):
+        # Récupérer le texte correspondant à ce fichier
+        file_text = texts[i] if i < len(texts) else ""
+        if filename.lower().endswith('.pdf'):
+            urls = extract_urls(file_text, pdf_raw=raw)
+            all_urls.extend(urls)
+        else:
+            urls = extract_urls(file_text, pdf_raw=None)
+            all_urls.extend(urls)
+    
+    # Supprimer les doublons
+    unique_urls = list(dict.fromkeys(all_urls))
 
     return {
         "success": True,
@@ -89,6 +105,7 @@ async def analyze_ao(files: List[UploadFile] = File(...)):
         "postal_address": postal_address,
         "buyer": buyer,
         "deadline": deadline,
+        "urls": unique_urls,
     }
 
 

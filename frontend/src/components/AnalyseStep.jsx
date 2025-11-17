@@ -260,6 +260,25 @@ export function AnalyseStep() {
                     <strong>Acheteur :</strong>{" "}
                     {result.buyer || "Non trouvé"}
                   </p>
+                  {result.urls && result.urls.length > 0 && (
+                    <div style={{ marginTop: "0.5rem" }}>
+                      <strong>URLs trouvées ({result.urls.length}) :</strong>
+                      <ul style={{ marginTop: "0.25rem", paddingLeft: "1.5rem", marginBottom: 0 }}>
+                        {result.urls.map((url, idx) => (
+                          <li key={idx} style={{ marginBottom: "0.25rem" }}>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: "#0ea5e9", wordBreak: "break-all" }}
+                            >
+                              {url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               </div>
 

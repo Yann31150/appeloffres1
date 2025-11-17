@@ -150,25 +150,107 @@ def extract_email(text: str) -> Optional[str]:
     
     text_to_search = '\n'.join(relevant_sections) if relevant_sections else text
     
-    # Pattern pour les emails
-    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-    emails = re.findall(email_pattern, text_to_search, re.IGNORECASE)
+    # Pattern amélioré pour les emails - plus robuste
+    # Supporte les formats : user@domain.com, user.name@domain.co.uk, user+tag@domain.fr
+    email_patterns = [
+        r'\b[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Z|a-z]{2,}\b',
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+        r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})',
+    ]
+    
+    emails = []
+    for pattern in email_patterns:
+        found = re.findall(pattern, text_to_search, re.IGNORECASE)
+        if found:
+            # Si le pattern retourne un tuple (groupe capturé), prendre le groupe
+            if isinstance(found[0], tuple):
+                emails.extend([f[0] if f[0] else f for f in found])
+            else:
+                emails.extend(found)
     
     if not emails:
         # Si pas trouvé dans les sections, cherche dans tout le texte
-        emails = re.findall(email_pattern, text, re.IGNORECASE)
+        for pattern in email_patterns:
+            found = re.findall(pattern, text, re.IGNORECASE)
+            if found:
+                if isinstance(found[0], tuple):
+                    emails.extend([f[0] if f[0] else f for f in found])
+                else:
+                    emails.extend(found)
     
     if not emails:
         return None
     
     # Filtre les emails courants à éviter
-    excluded = ['example.com', 'test.com', 'noreply', 'no-reply', 'webmaster']
+    excluded = ['example.com', 'test.com', 'noreply', 'no-reply', 'webmaster', 'admin@localhost']
     for email in emails:
-        email_lower = email.lower()
-        if not any(exc in email_lower for exc in excluded):
-            return email
+        email_lower = email.lower().strip()
+        # Vérifier que c'est un email valide
+        if '@' in email_lower and '.' in email_lower.split('@')[1]:
+            if not any(exc in email_lower for exc in excluded):
+                return email_lower
     
-    return emails[0] if emails else None
+    return emails[0].lower().strip() if emails else None
+
+
+def extract_urls(text: str, pdf_raw: Optional[bytes] = None) -> List[str]:
+    """Extrait les URLs depuis le texte et/ou directement depuis le PDF."""
+    urls = []
+    
+    # Méthode 1 : Extraire les liens directement depuis le PDF (plus fiable)
+    if pdf_raw:
+        try:
+            import fitz
+            doc = fitz.open(stream=pdf_raw, filetype="pdf")
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                # Récupère tous les liens de la page
+                links = page.get_links()
+                for link in links:
+                    if 'uri' in link:
+                        url = link['uri']
+                        if url and url not in urls:
+                            urls.append(url)
+            doc.close()
+        except Exception:
+            pass
+    
+    # Méthode 2 : Extraire les URLs depuis le texte avec des patterns regex
+    if text:
+        # Patterns pour différents types d'URLs
+        url_patterns = [
+            # URLs complètes avec http/https
+            r'https?://(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*)?(?:\?(?:[\w&=%.])*)?(?:#(?:[\w.])*)?',
+            # URLs sans protocole mais avec www
+            r'www\.(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*)?(?:\?(?:[\w&=%.])*)?(?:#(?:[\w.])*)?',
+            # URLs mailto
+            r'mailto:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}',
+        ]
+        
+        for pattern in url_patterns:
+            found = re.findall(pattern, text, re.IGNORECASE)
+            for url in found:
+                url_clean = url.strip().rstrip('.,;:!?)')
+                # Normaliser les URLs www sans http
+                if url_clean.startswith('www.'):
+                    url_clean = 'http://' + url_clean
+                if url_clean and url_clean not in urls:
+                    urls.append(url_clean)
+    
+    # Filtrer et nettoyer les URLs
+    filtered_urls = []
+    excluded_domains = ['localhost', '127.0.0.1', 'example.com', 'test.com']
+    
+    for url in urls:
+        url_lower = url.lower()
+        # Exclure les URLs non pertinentes
+        if not any(exc in url_lower for exc in excluded_domains):
+            # Nettoyer l'URL
+            url_clean = url.strip().rstrip('.,;:!?)')
+            if url_clean and url_clean not in filtered_urls:
+                filtered_urls.append(url_clean)
+    
+    return filtered_urls
 
 
 def extract_postal_address(text: str) -> Optional[str]:
@@ -238,11 +320,23 @@ def guess_deadline(text: str):
     if not text:
         return None
     
-    # Prendre les 3000 premiers caractères (première page généralement)
-    first_page_text = text[:3000]
+    # Prendre les 5000 premiers caractères (pour capturer plus de contexte)
+    first_page_text = text[:5000]
     
-    # Patterns améliorés pour capturer date ET heure
-    # Pattern 1 : Format avec jour de la semaine + date en lettres + heure (ex: "lundi 24 novembre 2025 à 12:00")
+    # PRIORITÉ 1 : Patterns spécifiques pour "remise des offres", "dépôt des offres", etc.
+    # Ces patterns sont prioritaires car ils indiquent clairement la date limite
+    priority_patterns_with_time = [
+        # "Remise des offres le 24/11/2025 à 12h00"
+        r'(?:remise[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant|au[:\s]+plus[:\s]+tard)[:\s]+)?(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]*(?:à|avant)[:\s]*(\d{1,2})[:hH.](\d{2})',
+        # "Remise des offres : 24/11/2025 à 12h00"
+        r'remise[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]*:?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]*(?:à|avant)[:\s]*(\d{1,2})[:hH.](\d{2})',
+        # "Dépôt des offres le 24/11/2025 à 12h00"
+        r'(?:d[ée]p[ôo]t[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant|au[:\s]+plus[:\s]+tard)[:\s]+)?(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]*(?:à|avant)[:\s]*(\d{1,2})[:hH.](\d{0,2})',
+        # "Date limite de remise des offres : 24/11/2025 à 12h00"
+        r'date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:remise|d[ée]p[ôo]t)[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]*:?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]*(?:à|avant)[:\s]*(\d{1,2})[:hH.](\d{2})',
+    ]
+    
+    # PRIORITÉ 2 : Patterns généraux pour capturer date ET heure
     patterns_with_time = [
         # "Date et heure limites de réception des offres : lundi 24 novembre 2025 à 12:00"
         # Pattern flexible - peut avoir ou non le jour de la semaine
@@ -262,7 +356,29 @@ def guess_deadline(text: str):
         'septembre': 9, 'octobre': 10, 'novembre': 11, 'décembre': 12, 'decembre': 12
     }
     
-    # Chercher d'abord les patterns avec heure dans la première page
+    # PRIORITÉ 1 : Chercher d'abord les patterns prioritaires (remise/dépôt des offres)
+    for pattern in priority_patterns_with_time:
+        match = re.search(pattern, first_page_text, re.IGNORECASE)
+        if match:
+            try:
+                jour = int(match.group(1))
+                mois = int(match.group(2))
+                annee_str = match.group(3)
+                annee = int(annee_str) if len(annee_str) == 4 else (2000 + int(annee_str) if int(annee_str) < 100 else int(annee_str))
+                heure_str = match.group(4) if len(match.groups()) >= 4 else "23"
+                minute_str = match.group(5) if len(match.groups()) >= 5 and match.group(5) else "00"
+                
+                heure = int(heure_str) if heure_str and heure_str.isdigit() else 23
+                minute = int(minute_str) if minute_str and minute_str.isdigit() else 0
+                if heure > 23:
+                    heure = 23
+                if minute > 59:
+                    minute = 59
+                return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+            except (ValueError, IndexError, AttributeError):
+                continue
+    
+    # PRIORITÉ 2 : Chercher ensuite les patterns généraux avec heure dans la première page
     for i, pattern in enumerate(patterns_with_time):
         match = re.search(pattern, first_page_text, re.IGNORECASE)
         if match:
@@ -315,13 +431,35 @@ def guess_deadline(text: str):
             except (ValueError, IndexError, AttributeError) as e:
                 continue
     
-    # Patterns sans heure (date seulement)
+    # PRIORITÉ 3 : Patterns sans heure (date seulement) - mais prioriser ceux avec "remise/dépôt"
+    priority_date_patterns = [
+        r'remise[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'd[ée]p[ôo]t[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:avant|le|au)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:remise|d[ée]p[ôo]t)[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+    ]
+    
     date_patterns = [
         r'(?:date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:r[ée]ception|d[ée]p[ôo]t|remise)[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
         r'(?:r[ée]ception[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant)[:\s]+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
         r'd[ée]p[ôo]t[:\s]+(?:avant|le|au)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
         r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})[:\s]+(?:date[:\s]+limite|d[ée]p[ôo]t|r[ée]ception)',
     ]
+    
+    # Chercher d'abord les patterns prioritaires (remise/dépôt)
+    for pattern in priority_date_patterns:
+        match = re.search(pattern, first_page_text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            try:
+                for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y']:
+                    try:
+                        date_obj = dt.datetime.strptime(date_str, fmt)
+                        # Par défaut, mettre 23:59 si pas d'heure trouvée
+                        return date_obj.replace(hour=23, minute=59, second=0, microsecond=0)
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
     
     # Chercher dans la première page d'abord
     for pattern in date_patterns:
@@ -339,7 +477,30 @@ def guess_deadline(text: str):
             except Exception:
                 pass
     
-    # Si pas trouvé dans la première page, chercher dans tout le texte
+    # Si pas trouvé dans la première page, chercher dans tout le texte avec les mêmes priorités
+    # PRIORITÉ 1 : Patterns prioritaires dans tout le texte
+    for pattern in priority_patterns_with_time:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                jour = int(match.group(1))
+                mois = int(match.group(2))
+                annee_str = match.group(3)
+                annee = int(annee_str) if len(annee_str) == 4 else (2000 + int(annee_str) if int(annee_str) < 100 else int(annee_str))
+                heure_str = match.group(4) if len(match.groups()) >= 4 else "23"
+                minute_str = match.group(5) if len(match.groups()) >= 5 and match.group(5) else "00"
+                
+                heure = int(heure_str) if heure_str and heure_str.isdigit() else 23
+                minute = int(minute_str) if minute_str and minute_str.isdigit() else 0
+                if heure > 23:
+                    heure = 23
+                if minute > 59:
+                    minute = 59
+                return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+            except (ValueError, IndexError, AttributeError):
+                continue
+    
+    # PRIORITÉ 2 : Patterns généraux dans tout le texte
     for i, pattern in enumerate(patterns_with_time):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -392,6 +553,22 @@ def guess_deadline(text: str):
             except (ValueError, IndexError, AttributeError):
                 continue
     
+    # PRIORITÉ 3 : Patterns prioritaires (remise/dépôt) dans tout le texte
+    for pattern in priority_date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            try:
+                for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y']:
+                    try:
+                        date_obj = dt.datetime.strptime(date_str, fmt)
+                        return date_obj.replace(hour=23, minute=59, second=0, microsecond=0)
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+    
+    # Dernière tentative : patterns généraux dans tout le texte
     for pattern in date_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:

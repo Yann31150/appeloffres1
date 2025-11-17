@@ -6,6 +6,7 @@ from extract_required_documents import extract_required_documents, detect_sector
 from utils import (
     extract_email,
     extract_postal_address,
+    extract_urls,
     guess_buyer,
     guess_deadline,
     load_docx_text,
@@ -91,6 +92,26 @@ def _analyze_and_store_metadata(combined_text: str, files_data):
         postal_address = extract_postal_address(combined_text)
         buyer = guess_buyer(combined_text)
         deadline = guess_deadline(combined_text)
+        
+        # Extraction des URLs depuis les PDFs
+        all_urls = []
+        for filename, raw in files_data:
+            # Extraire le texte de ce fichier spécifique
+            if filename.lower().endswith('.pdf'):
+                file_text = load_pdf_text(raw)
+                urls = extract_urls(file_text, pdf_raw=raw)
+                all_urls.extend(urls)
+            elif filename.lower().endswith('.docx'):
+                file_text = load_docx_text(raw)
+                urls = extract_urls(file_text, pdf_raw=None)
+                all_urls.extend(urls)
+            else:
+                # Pour les autres formats, utiliser le texte combiné
+                urls = extract_urls(combined_text, pdf_raw=None)
+                all_urls.extend(urls)
+        
+        # Supprimer les doublons
+        unique_urls = list(dict.fromkeys(all_urls))
 
         # Sauvegarde dans session_state
         if email_to:
@@ -101,12 +122,14 @@ def _analyze_and_store_metadata(combined_text: str, files_data):
             st.session_state["buyer"] = buyer
         if deadline:
             st.session_state["deadline"] = deadline.isoformat()
+        if unique_urls:
+            st.session_state["urls"] = unique_urls
 
         # Sauvegarde des fichiers uploadés et des documents requis
         st.session_state["ao_files"] = files_data
         st.session_state["required_documents"] = required_docs
 
-    return required_docs, email_to, postal_address, buyer, deadline
+    return required_docs, email_to, postal_address, buyer, deadline, unique_urls
 
 
 def _display_required_documents(required_docs):
@@ -151,7 +174,7 @@ def _display_required_documents(required_docs):
 
 
 def _display_summary(
-    required_docs, categories, email_to, buyer, deadline, postal_address
+    required_docs, categories, email_to, buyer, deadline, postal_address, urls
 ) -> None:
     """Affiche le résumé des informations extraites et les statistiques."""
     st.subheader("📊 Informations extraites")
@@ -194,6 +217,10 @@ def _display_summary(
             st.write(f"**Date et heure limite de réception** : {date_str} à {time_str}")
         if postal_address:
             st.write(f"**Adresse postale** : {postal_address}")
+        if urls:
+            st.write("**URLs trouvées** :")
+            for url in urls:
+                st.write(f"- [{url}]({url})")
 
     st.divider()
 
@@ -251,6 +278,7 @@ def render():
         postal_address,
         buyer,
         deadline,
+        urls,
     ) = _analyze_and_store_metadata(combined_text, files_data)
 
     if not required_docs:
@@ -264,4 +292,4 @@ def render():
     st.divider()
 
     categories = _display_required_documents(required_docs)
-    _display_summary(required_docs, categories, email_to, buyer, deadline, postal_address)
+    _display_summary(required_docs, categories, email_to, buyer, deadline, postal_address, urls)
