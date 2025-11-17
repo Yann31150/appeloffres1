@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
 *$py.class
 *.so
 .Python
@@ -14,10 +15,16 @@ build/
 
 # Node.js
 node_modules/
+frontend/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Node / JS build
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
 
 # IDEs
 .vscode/
@@ -34,6 +41,7 @@ desktop.ini
 # Application specific
 output/*
 !output/.gitkeep
+temp_uploads/
 temp_uploads/*
 !temp_uploads/.gitkeep
 
@@ -43,4 +51,3 @@ temp_uploads/*
 # Environment variables
 .env
 .env.local
-

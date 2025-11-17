@@ -8,6 +8,13 @@ const STEPS = ["Analyse", "Assemblage", "Email & Export"];
 
 export default function App() {
   const [activeStep, setActiveStep] = useState(0);
+  const [companyFiles, setCompanyFiles] = useState([]);
+  const [companyFolderInfo, setCompanyFolderInfo] = useState(null);
+
+  const handleFolderSelection = (files, info) => {
+    setCompanyFiles(files);
+    setCompanyFolderInfo(info || null);
+  };
 
   return (
     <div className="app-root">
@@ -42,8 +49,20 @@ export default function App() {
 
         <section className="app-content">
           {activeStep === 0 && <AnalyseStep />}
-          {activeStep === 1 && <AssemblageStep />}
-          {activeStep === 2 && <ExportStep />}
+          {activeStep === 1 && (
+            <AssemblageStep
+              companyFiles={companyFiles}
+              companyFolderInfo={companyFolderInfo}
+              onFolderSelect={handleFolderSelection}
+            />
+          )}
+          {activeStep === 2 && (
+            <ExportStep
+              companyFiles={companyFiles}
+              companyFolderInfo={companyFolderInfo}
+              onFolderSelect={handleFolderSelection}
+            />
+          )}
         </section>
       </main>
 
@@ -55,6 +74,8 @@ export default function App() {
     </div>
   );
 }
+
+
 
 
 
