@@ -20,10 +20,15 @@ from utils import (
 
 app = FastAPI(title="AO Analyzer API", version="1.0.0")
 
-# Autorise le front React en dev
+# Autorise le front React en dev (tous les ports locaux courants)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +96,8 @@ async def analyze_ao(files: List[UploadFile] = File(...)):
 def health():
     """Endpoint simple de santé pour vérifier que l'API tourne."""
     return {"status": "ok"}
+
+
 
 
 

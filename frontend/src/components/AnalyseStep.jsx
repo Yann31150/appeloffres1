@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
 const API_URL = "http://localhost:8000/analyze";
+const API_HEALTH_URL = "http://localhost:8000/health";
 
 export function AnalyseStep() {
   // États simples (sans typage TypeScript car on est en JSX)
@@ -8,6 +9,37 @@ export function AnalyseStep() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [apiStatus, setApiStatus] = useState("checking"); // "checking", "online", "offline"
+
+  // Vérifier la santé de l'API au chargement du composant
+  useEffect(() => {
+    const checkApiHealth = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // Timeout de 3 secondes
+        
+        const response = await fetch(API_HEALTH_URL, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          setApiStatus("online");
+        } else {
+          setApiStatus("offline");
+        }
+      } catch (e) {
+        setApiStatus("offline");
+      }
+    };
+
+    checkApiHealth();
+    // Vérifier toutes les 10 secondes si l'API est toujours disponible
+    const interval = setInterval(checkApiHealth, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleFilesChange = (event) => {
     const selected = event.target.files;
@@ -39,13 +71,28 @@ export function AnalyseStep() {
       if (!data.success) {
         setError(data.message || "Erreur lors de l'analyse des documents.");
         setResult(null);
+        try {
+          window.localStorage.removeItem("ao-last-result");
+        } catch (storageError) {
+          // Ignorer les erreurs de stockage (mode navigation privée, etc.)
+        }
       } else {
         setResult(data);
+        try {
+          window.localStorage.setItem("ao-last-result", JSON.stringify(data));
+        } catch (storageError) {
+          // Ignorer les erreurs de stockage (quota dépassé, etc.)
+        }
       }
     } catch (e) {
       setError(
         "Impossible de joindre l'API. Vérifiez que le serveur Python (FastAPI) tourne sur http://localhost:8000."
       );
+      try {
+        window.localStorage.removeItem("ao-last-result");
+      } catch (storageError) {
+        // Ignorer
+      }
     } finally {
       setLoading(false);
     }
@@ -58,6 +105,46 @@ export function AnalyseStep() {
         Importez vos documents d&apos;appel d&apos;offres (RC, CCAP, CCTP, etc.).
         La logique métier reste fournie par votre code Python, exposé ici via une API FastAPI.
       </p>
+
+      {/* Indicateur de statut de l'API */}
+      {apiStatus === "checking" && (
+        <div style={{ 
+          padding: "0.75rem", 
+          backgroundColor: "#fef3c7", 
+          border: "1px solid #fbbf24",
+          borderRadius: "0.5rem",
+          marginBottom: "1rem"
+        }}>
+          <strong>⏳ Vérification de la connexion à l'API...</strong>
+        </div>
+      )}
+      {apiStatus === "offline" && (
+        <div style={{ 
+          padding: "0.75rem", 
+          backgroundColor: "#fee2e2", 
+          border: "1px solid #ef4444",
+          borderRadius: "0.5rem",
+          marginBottom: "1rem"
+        }}>
+          <strong>⚠️ L'API FastAPI n'est pas accessible</strong>
+          <p style={{ margin: "0.5rem 0 0 0", fontSize: "0.9rem" }}>
+            Assurez-vous que le serveur Python (FastAPI) tourne sur http://localhost:8000.
+            <br />
+            Utilisez le script <code>start.bat</code> ou <code>start.ps1</code> pour lancer automatiquement les deux serveurs.
+          </p>
+        </div>
+      )}
+      {apiStatus === "online" && (
+        <div style={{ 
+          padding: "0.75rem", 
+          backgroundColor: "#d1fae5", 
+          border: "1px solid #10b981",
+          borderRadius: "0.5rem",
+          marginBottom: "1rem"
+        }}>
+          <strong>✅ API FastAPI connectée</strong>
+        </div>
+      )}
 
       <div className="panel-grid">
         <section className="panel-card">
@@ -83,7 +170,7 @@ export function AnalyseStep() {
             type="button"
             className="primary-button"
             onClick={handleAnalyze}
-            disabled={loading}
+            disabled={loading || apiStatus !== "online"}
           >
             {loading ? "Analyse en cours..." : "Lancer l'analyse"}
           </button>
