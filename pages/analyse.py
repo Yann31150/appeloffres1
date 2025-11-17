@@ -168,11 +168,20 @@ def _display_summary(
         st.metric("Acheteur", buyer_display)
 
     with col3:
-        date_display = deadline.strftime("%d/%m/%Y") if deadline else "Non trouvée"
-        st.metric("Date limite", date_display)
+        if deadline:
+            date_display = deadline.strftime("%d/%m/%Y")
+            time_display = deadline.strftime("%H:%M")
+            st.metric("Date limite", f"{date_display} à {time_display}")
+        else:
+            st.metric("Date limite", "Non trouvée")
 
     with col4:
-        st.metric("Adresse", "Trouvée" if postal_address else "Non trouvée")
+        if postal_address:
+            # Afficher un aperçu de l'adresse (tronqué si trop long)
+            address_preview = postal_address[:40] + "..." if len(postal_address) > 40 else postal_address
+            st.metric("Adresse postale", address_preview)
+        else:
+            st.metric("Adresse postale", "Non trouvée")
 
     with st.expander("📝 Détails des informations extraites"):
         if email_to:
@@ -180,7 +189,9 @@ def _display_summary(
         if buyer:
             st.write(f"**Acheteur** : {buyer}")
         if deadline:
-            st.write(f"**Date limite** : {deadline.strftime('%d/%m/%Y à %H:%M')}")
+            date_str = deadline.strftime('%d/%m/%Y')
+            time_str = deadline.strftime('%H:%M')
+            st.write(f"**Date et heure limite de réception** : {date_str} à {time_str}")
         if postal_address:
             st.write(f"**Adresse postale** : {postal_address}")
 

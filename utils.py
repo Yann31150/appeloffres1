@@ -172,12 +172,45 @@ def extract_email(text: str) -> Optional[str]:
 
 
 def extract_postal_address(text: str) -> Optional[str]:
-    """Extrait une adresse postale approximative du texte."""
-    # Pattern simple pour les adresses françaises
-    address_pattern = r'\d+[,\s]+[A-Za-zÀ-ÿ\s]+(?:rue|avenue|boulevard|place|chemin|route|impasse)[A-Za-zÀ-ÿ\s]+\d{5}'
-    matches = re.findall(address_pattern, text, re.IGNORECASE)
-    if matches:
-        return matches[0]
+    """Extrait une adresse postale du texte, en priorité depuis la première page."""
+    if not text:
+        return None
+    
+    # Prendre les 2000 premiers caractères (première page généralement)
+    first_page_text = text[:2000]
+    
+    # Patterns pour les adresses françaises - plusieurs variantes
+    address_patterns = [
+        # Format complet : numéro + rue + ville + code postal
+        r'(?:\d+[,\s]+)?(?:[A-Za-zÀ-ÿ\s]+(?:rue|avenue|boulevard|place|chemin|route|impasse|allée|passage)[A-Za-zÀ-ÿ\s,]+(?:\d{5}|[A-Za-zÀ-ÿ\s]+))',
+        # Format avec code postal en fin
+        r'[A-Za-zÀ-ÿ\s]+(?:rue|avenue|boulevard|place|chemin|route|impasse|allée|passage)[A-Za-zÀ-ÿ\s,]+(?:\d{5})',
+        # Format avec numéro de rue
+        r'\d+[,\s]+(?:rue|avenue|boulevard|place|chemin|route|impasse|allée|passage)[A-Za-zÀ-ÿ\s,]+(?:\d{5}|[A-Za-zÀ-ÿ\s]+)',
+        # Format simple avec code postal
+        r'[A-Za-zÀ-ÿ\s]{10,}(?:,\s*)?\d{5}\s+[A-Za-zÀ-ÿ\s]+',
+    ]
+    
+    # Chercher d'abord dans la première page
+    for pattern in address_patterns:
+        matches = re.findall(pattern, first_page_text, re.IGNORECASE)
+        if matches:
+            # Prendre la première correspondance et nettoyer
+            address = matches[0].strip()
+            # Nettoyer les espaces multiples
+            address = re.sub(r'\s+', ' ', address)
+            if len(address) > 10:  # Au moins 10 caractères pour être valide
+                return address
+    
+    # Si pas trouvé dans la première page, chercher dans tout le texte
+    for pattern in address_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            address = matches[0].strip()
+            address = re.sub(r'\s+', ' ', address)
+            if len(address) > 10:
+                return address
+    
     return None
 
 
@@ -199,25 +232,175 @@ def guess_buyer(text: str) -> Optional[str]:
 
 
 def guess_deadline(text: str):
-    """Tente de deviner la date limite de dépôt."""
+    """Tente de deviner la date et heure limite de dépôt/réception des offres."""
     import datetime as dt
     
-    # Patterns de dates
-    date_patterns = [
-        r'date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:dépôt|remise)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
-        r'dépôt[:\s]+(?:avant|le|au)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
-        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})[:\s]+(?:date[:\s]+limite|dépôt)',
+    if not text:
+        return None
+    
+    # Prendre les 3000 premiers caractères (première page généralement)
+    first_page_text = text[:3000]
+    
+    # Patterns améliorés pour capturer date ET heure
+    # Pattern 1 : Format avec jour de la semaine + date en lettres + heure (ex: "lundi 24 novembre 2025 à 12:00")
+    patterns_with_time = [
+        # "Date et heure limites de réception des offres : lundi 24 novembre 2025 à 12:00"
+        # Pattern flexible - peut avoir ou non le jour de la semaine
+        r'(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)[\s,]+)?(\d{1,2})[\s,]+(janvier|f[ée]vrier|fevrier|mars|avril|mai|juin|juillet|ao[ûu]t|aout|septembre|octobre|novembre|d[ée]cembre|decembre)[\s,]+(\d{4})[\s,]*[àa]?\s*(\d{1,2})[:hH.](\d{2})',
+        # "Date limite de réception des offres : 24/11/2025 à 12h00"
+        r'(?:date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:r[ée]ception|d[ée]p[ôo]t|remise)[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+)?(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]*(?:à|avant|avant\s+le)[:\s]*(\d{1,2})[hH:.]?(\d{0,2})',
+        # "Réception des offres le 24/11/2025 à 12h00"
+        r'(?:r[ée]ception[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant)[:\s]+)?(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]*(?:à|avant)[:\s]*(\d{1,2})[hH:.]?(\d{0,2})',
+        # "Date limite : 24/11/2025 12:00"
+        r'(?:date[:\s]+limite[:\s]*:?[:\s]*)?(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})[:\s]+(\d{1,2})[hH:.](\d{2})',
     ]
+    
+    # Mapping des mois en français
+    mois_fr = {
+        'janvier': 1, 'février': 2, 'fevrier': 2, 'mars': 3, 'avril': 4,
+        'mai': 5, 'juin': 6, 'juillet': 7, 'août': 8, 'aout': 8,
+        'septembre': 9, 'octobre': 10, 'novembre': 11, 'décembre': 12, 'decembre': 12
+    }
+    
+    # Chercher d'abord les patterns avec heure dans la première page
+    for i, pattern in enumerate(patterns_with_time):
+        match = re.search(pattern, first_page_text, re.IGNORECASE)
+        if match:
+            try:
+                # Pattern 0 : Format avec mois en lettres (ex: "lundi 24 novembre 2025 à 12:00")
+                if i == 0 and len(match.groups()) >= 5:
+                    jour = int(match.group(1))
+                    mois_nom = match.group(2).lower()
+                    annee = int(match.group(3))
+                    heure = int(match.group(4))
+                    minute = int(match.group(5))
+                    
+                    if mois_nom in mois_fr:
+                        mois = mois_fr[mois_nom]
+                        if heure > 23:
+                            heure = 23
+                        if minute > 59:
+                            minute = 59
+                        return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+                
+                # Patterns avec format numérique (ex: "24/11/2025 à 12:00")
+                elif len(match.groups()) >= 3:
+                    if i == 1 or i == 2:  # Patterns avec format DD/MM/YYYY
+                        jour = int(match.group(1))
+                        mois = int(match.group(2))
+                        annee_str = match.group(3)
+                        annee = int(annee_str) if len(annee_str) == 4 else (2000 + int(annee_str) if int(annee_str) < 100 else int(annee_str))
+                        heure_str = match.group(4) if len(match.groups()) >= 4 else "23"
+                        minute_str = match.group(5) if len(match.groups()) >= 5 and match.group(5) else "59"
+                        
+                        heure = int(heure_str) if heure_str else 23
+                        minute = int(minute_str) if minute_str and minute_str.isdigit() else 59
+                        if heure > 23:
+                            heure = 23
+                        if minute > 59:
+                            minute = 59
+                        return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+                    else:  # Pattern avec format direct
+                        jour = int(match.group(1))
+                        mois = int(match.group(2))
+                        annee_str = match.group(3)
+                        annee = int(annee_str) if len(annee_str) == 4 else (2000 + int(annee_str) if int(annee_str) < 100 else int(annee_str))
+                        heure = int(match.group(4)) if len(match.groups()) >= 4 else 23
+                        minute = int(match.group(5)) if len(match.groups()) >= 5 else 59
+                        if heure > 23:
+                            heure = 23
+                        if minute > 59:
+                            minute = 59
+                        return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+            except (ValueError, IndexError, AttributeError) as e:
+                continue
+    
+    # Patterns sans heure (date seulement)
+    date_patterns = [
+        r'(?:date[:\s]+limite[:\s]+(?:de[:\s]+)?(?:r[ée]ception|d[ée]p[ôo]t|remise)[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'(?:r[ée]ception[:\s]+(?:des[:\s]+)?(?:offres?|plis?)[:\s]+(?:le|au|avant)[:\s]+)?(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'd[ée]p[ôo]t[:\s]+(?:avant|le|au)[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})[:\s]+(?:date[:\s]+limite|d[ée]p[ôo]t|r[ée]ception)',
+    ]
+    
+    # Chercher dans la première page d'abord
+    for pattern in date_patterns:
+        match = re.search(pattern, first_page_text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            try:
+                for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y']:
+                    try:
+                        date_obj = dt.datetime.strptime(date_str, fmt)
+                        # Par défaut, mettre 23:59 si pas d'heure trouvée
+                        return date_obj.replace(hour=23, minute=59, second=0, microsecond=0)
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+    
+    # Si pas trouvé dans la première page, chercher dans tout le texte
+    for i, pattern in enumerate(patterns_with_time):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                # Pattern 0 : Format avec mois en lettres
+                if i == 0 and len(match.groups()) >= 5:
+                    jour = int(match.group(1))
+                    mois_nom = match.group(2).lower()
+                    annee = int(match.group(3))
+                    heure = int(match.group(4))
+                    minute = int(match.group(5))
+                    
+                    if mois_nom in mois_fr:
+                        mois = mois_fr[mois_nom]
+                        if heure > 23:
+                            heure = 23
+                        if minute > 59:
+                            minute = 59
+                        return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+                
+                # Patterns avec format numérique
+                elif len(match.groups()) >= 3:
+                    if i == 1 or i == 2:
+                        jour = int(match.group(1))
+                        mois = int(match.group(2))
+                        annee_str = match.group(3)
+                        annee = int(annee_str) if len(annee_str) == 4 else (2000 + int(annee_str) if int(annee_str) < 100 else int(annee_str))
+                        heure_str = match.group(4) if len(match.groups()) >= 4 else "23"
+                        minute_str = match.group(5) if len(match.groups()) >= 5 and match.group(5) else "59"
+                        
+                        heure = int(heure_str) if heure_str else 23
+                        minute = int(minute_str) if minute_str and minute_str.isdigit() else 59
+                        if heure > 23:
+                            heure = 23
+                        if minute > 59:
+                            minute = 59
+                        return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+                    else:
+                        jour = int(match.group(1))
+                        mois = int(match.group(2))
+                        annee_str = match.group(3)
+                        annee = int(annee_str) if len(annee_str) == 4 else (2000 + int(annee_str) if int(annee_str) < 100 else int(annee_str))
+                        heure = int(match.group(4)) if len(match.groups()) >= 4 else 23
+                        minute = int(match.group(5)) if len(match.groups()) >= 5 else 59
+                        if heure > 23:
+                            heure = 23
+                        if minute > 59:
+                            minute = 59
+                        return dt.datetime(annee, mois, jour, heure, minute, 0, 0)
+            except (ValueError, IndexError, AttributeError):
+                continue
     
     for pattern in date_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             date_str = match.group(1)
             try:
-                # Tentative de parsing de la date
                 for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y']:
                     try:
-                        return dt.datetime.strptime(date_str, fmt)
+                        date_obj = dt.datetime.strptime(date_str, fmt)
+                        return date_obj.replace(hour=23, minute=59, second=0, microsecond=0)
                     except ValueError:
                         continue
             except Exception:

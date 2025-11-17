@@ -94,39 +94,101 @@ export function AnalyseStep() {
           <h3>Résultats</h3>
           {!result && !error && (
             <p className="hint">
-              Les documents requis, le secteur, l&apos;email, l&apos;acheteur et la date limite
+              Les documents requis, le secteur, l&apos;email, l&apos;acheteur, la date et heure limite de réception, ainsi que l&apos;adresse postale
               s&apos;afficheront ici après l&apos;analyse.
             </p>
           )}
           {result && (
             <div className="analysis-result">
-              <p>
-                <strong>Secteur détecté :</strong>{" "}
-                {result.sector ? result.sector : "Aucun secteur spécifique"}
-              </p>
-              <p>
-                <strong>Email :</strong>{" "}
-                {result.email_to || "Non trouvé"}
-              </p>
-              <p>
-                <strong>Acheteur :</strong>{" "}
-                {result.buyer || "Non trouvé"}
-              </p>
-              <p>
-                <strong>Date limite :</strong>{" "}
-                {result.deadline ? result.deadline : "Non trouvée"}
-              </p>
-              <h4 style={{ marginTop: "0.7rem" }}>
-                Documents requis ({result.required_documents?.length || 0})
-              </h4>
-              <ul className="bullet-list">
-                {(result.required_documents || []).map((doc) => (
-                  <li key={doc.key}>
-                    <strong>{doc.label}</strong> — {doc.category} (score{" "}
-                    {doc.score})
-                  </li>
-                ))}
-              </ul>
+              {/* Section importante : Date/heure limite et Adresse postale */}
+              <div
+                style={{
+                  backgroundColor: "#f0f9ff",
+                  border: "1px solid #0ea5e9",
+                  borderRadius: "8px",
+                  padding: "1rem",
+                  marginBottom: "1.5rem",
+                }}
+              >
+                <h4 style={{ marginTop: 0, marginBottom: "0.75rem", color: "#0369a1" }}>
+                  📅 Informations de réception
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <div>
+                    <strong style={{ color: "#0c4a6e" }}>Date et heure limite de réception :</strong>
+                    <div style={{ marginTop: "0.25rem", fontSize: "1.1em", fontWeight: "600" }}>
+                      {result.deadline
+                        ? (() => {
+                            try {
+                              const date = new Date(result.deadline);
+                              const dateStr = date.toLocaleDateString("fr-FR", {
+                                day: "2-digit",
+                                month: "2-digit",
+                                year: "numeric",
+                              });
+                              const timeStr = date.toLocaleTimeString("fr-FR", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              });
+                              return `${dateStr} à ${timeStr}`;
+                            } catch {
+                              return result.deadline;
+                            }
+                          })()
+                        : "❌ Non trouvée"}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: "0.5rem" }}>
+                    <strong style={{ color: "#0c4a6e" }}>Adresse postale :</strong>
+                    <div style={{ marginTop: "0.25rem", fontSize: "1em" }}>
+                      {result.postal_address || "❌ Non trouvée"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Autres informations */}
+              <div style={{ marginBottom: "1rem" }}>
+                <h4 style={{ marginTop: 0, marginBottom: "0.5rem" }}>Informations complémentaires</h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <p style={{ margin: 0 }}>
+                    <strong>Secteur détecté :</strong>{" "}
+                    {result.sector ? (
+                      <span style={{ textTransform: "capitalize" }}>{result.sector}</span>
+                    ) : (
+                      "Aucun secteur spécifique"
+                    )}
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    <strong>Email :</strong>{" "}
+                    {result.email_to ? (
+                      <a href={`mailto:${result.email_to}`} style={{ color: "#0ea5e9" }}>
+                        {result.email_to}
+                      </a>
+                    ) : (
+                      "Non trouvé"
+                    )}
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    <strong>Acheteur :</strong>{" "}
+                    {result.buyer || "Non trouvé"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Documents requis */}
+              <div style={{ marginTop: "1.5rem", paddingTop: "1rem", borderTop: "1px solid #e5e7eb" }}>
+                <h4 style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+                  Documents requis ({result.required_documents?.length || 0})
+                </h4>
+                <ul className="bullet-list" style={{ margin: 0 }}>
+                  {(result.required_documents || []).map((doc) => (
+                    <li key={doc.key} style={{ marginBottom: "0.5rem" }}>
+                      <strong>{doc.label}</strong> — {doc.category} (score {doc.score})
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
         </section>
